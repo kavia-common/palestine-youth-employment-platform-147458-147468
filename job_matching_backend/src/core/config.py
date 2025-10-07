@@ -56,7 +56,14 @@ class Settings(BaseSettings):
 
     # PUBLIC_INTERFACE
     def require_database_url(self) -> str:
-        """Return DATABASE_URL or raise a clear, actionable error message."""
+        """
+        Return DATABASE_URL or raise a clear, actionable error message.
+
+        Notes:
+        - The database module will normalize postgres/postgresql URLs to use the psycopg v3 driver
+          (postgresql+psycopg://).
+        - If 'sslmode' is not specified in the URL, it is enforced to 'require' for compatibility with Supabase.
+        """
         if self.DATABASE_URL:
             return self.DATABASE_URL
         # Provide helpful guidance about configuration.

@@ -18,8 +18,11 @@ def _ensure_engine() -> Engine:
     Create and cache a global SQLAlchemy engine.
 
     Notes:
-    - Force SQLAlchemy to use the psycopg v3 driver (postgresql+psycopg://) to avoid falling back to psycopg2.
-    - Enforce sslmode=require by default for Supabase/hosted Postgres unless explicitly set in the URL.
+    - Forces SQLAlchemy to use the psycopg v3 driver by rewriting to 'postgresql+psycopg://'
+      when the scheme is 'postgres' or 'postgresql'.
+    - Enforces 'sslmode=require' by default for Supabase/hosted Postgres unless explicitly set
+      in the DATABASE_URL query parameters.
+    - Behavior ensures compatibility with Supabase which requires SSL.
     """
     global _engine, _SessionLocal
     if _engine is None:
@@ -42,7 +45,8 @@ def _ensure_engine() -> Engine:
 
                 # Rebuild URL with explicit driver
                 # urlunsplit expects (scheme, netloc, path, query, fragment)
-                db_url = urlunsplit((driver_scheme, sp.netloc, sp.path, new_query, sp.fragment))
+                normalized_url = urlunsplit((driver_scheme, sp.netloc, sp.path, new_query, sp.fragment))
+                db_url = normalized_url
             else:
                 # If a custom SQLAlchemy URL was provided without driver, leave it as-is
                 # but it should already include a working driver.
