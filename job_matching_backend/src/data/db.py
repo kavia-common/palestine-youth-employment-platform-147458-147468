@@ -25,16 +25,61 @@ def _touch_full_url() -> None:
     _ = _engine_normalized_url_full
 
 
+def _percent_encode_password(db_url: str) -> str:
+    """
+    Best-effort percent-encode only the password portion of a DSN if present.
+
+    We avoid strict URL parsing (which fails when the password contains reserved chars like [] @ / :).
+    Strategy:
+    - Find the first occurrence of '://' then locate the next '@'.
+    - Within that window, find the last ':' which separates username and password.
+    - Percent-encode everything between that ':' and the '@' if it contains unsafe characters.
+    """
+    try:
+        scheme_sep = db_url.find("://")
+        if scheme_sep == -1:
+            return db_url
+        at_pos = db_url.find("@", scheme_sep + 3)
+        if at_pos == -1:
+            return db_url
+        # slice between scheme:// and @
+        creds_segment = db_url[scheme_sep + 3 : at_pos]
+        # find last ':' in creds_segment (username:password)
+        colon_pos = creds_segment.rfind(":")
+        if colon_pos == -1:
+            return db_url  # no password found
+        username = creds_segment[:colon_pos]
+        password = creds_segment[colon_pos + 1 :]
+
+        # If password already appears to be percent-encoded (contains %XX patterns), leave it
+        import re
+        if re.search(r"%[0-9A-Fa-f]{2}", password):
+            return db_url
+
+        from urllib.parse import quote
+
+        encoded_pw = quote(password, safe="")  # encode all non-alphanum
+        if encoded_pw == password:
+            return db_url  # nothing to change
+
+        new_creds = f"{username}:{encoded_pw}"
+        return db_url[: scheme_sep + 3] + new_creds + db_url[at_pos:]
+    except Exception:
+        # On any failure, return original to avoid breaking
+        return db_url
+
+
 def _normalize_db_url(db_url: str) -> str:
     """
     Normalize a Postgres URL for SQLAlchemy psycopg v3 with sslmode default.
 
     Robust rules:
-    - Do not rely on strict parsing for secrets containing special chars; perform minimal string normalization.
+    - Percent-encode password segment if it contains reserved characters.
     - Force scheme to postgresql+psycopg for SQLAlchemy.
     - Ensure sslmode=require if not present.
     """
-    normalized = db_url.strip()
+    # First, attempt to encode password safely to avoid parser errors downstream
+    normalized = _percent_encode_password(db_url.strip())
 
     # Force SQLAlchemy psycopg v3 driver scheme
     if normalized.startswith("postgres://"):
