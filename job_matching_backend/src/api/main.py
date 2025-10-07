@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logging
+import re
 
 from src.api.routers.auth import router as auth_router
 from src.api.routers.users import router as users_router
@@ -56,12 +57,13 @@ app.add_middleware(
 def _effective_sslmode_from_url(db_url: str | None) -> str | None:
     if not db_url:
         return None
+    # Try robust parse; if it fails, default to require (our engine normalization enforces it anyway)
     try:
         sp = urlsplit(db_url)
         params = dict(parse_qsl(sp.query, keep_blank_values=True))
         return params.get("sslmode", "require")
     except Exception:
-        return None
+        return "require"
 
 def _dsn_preview(db_url: str | None) -> str | None:
     """Return masked DSN preview for diagnostics."""
@@ -73,8 +75,20 @@ def _dsn_preview(db_url: str | None) -> str | None:
         host = sp.hostname or ""
         port = sp.port or 5432
         dbname = sp.path.lstrip("/") if sp.path else ""
-        return f"{sp.scheme}://{user}@{host}:{port}/{dbname}"
+        scheme = sp.scheme
+        # If we normalized to postgresql+psycopg in engine, display as postgresql for readability
+        scheme = "postgresql" if scheme.startswith("postgresql") else scheme
+        return f"{scheme}://{user}@{host}:{port}/{dbname}"
     except Exception:
+        # Fallback: attempt a light regex to extract parts without choking on password chars
+        m = re.match(r"^(?P<scheme>postgresql|postgres)(?:\\+[^:]*)?://(?P<user>[^:@/]+):[^@]*@(?P<host>[^/:]+)(?::(?P<port>\\d+))?/(?P<db>[^?]+)", db_url)
+        if m:
+            scheme = m.group("scheme")
+            user = m.group("user")
+            host = m.group("host")
+            port = m.group("port") or "5432"
+            db = m.group("db")
+            return f"{scheme}://{user}@{host}:{port}/{db}"
         return "unparseable"
 
 def _db_scheme(db_url: str | None) -> str | None:
@@ -98,9 +112,14 @@ def health_check():
     try:
         ok = db_health_check()
     except Exception as e:
-        message = f"Database not reachable or DATABASE_URL missing: {e}"
+        # Avoid implying psycopg2; surface concise message
+        message = f"Database not reachable or misconfigured: {str(e)}"
         ok = False
-        logger.warning("Health degraded: %s | sslmode=%s", message, _effective_sslmode_from_url(getattr(settings, "DATABASE_URL", None)))
+        logger.warning(
+            "Health degraded: %s | sslmode=%s",
+            message,
+            _effective_sslmode_from_url(getattr(settings, "DATABASE_URL", None)),
+        )
     db_url = getattr(settings, "DATABASE_URL", None)
     payload = {
         "status": "ok" if ok else "degraded",
@@ -127,9 +146,13 @@ def health_check_endpoint():
     try:
         ok = db_health_check()
     except Exception as e:
-        message = f"Database not reachable or DATABASE_URL missing: {e}"
+        message = f"Database not reachable or misconfigured: {str(e)}"
         ok = False
-        logger.warning("Health degraded: %s | sslmode=%s", message, _effective_sslmode_from_url(getattr(settings, "DATABASE_URL", None)))
+        logger.warning(
+            "Health degraded: %s | sslmode=%s",
+            message,
+            _effective_sslmode_from_url(getattr(settings, "DATABASE_URL", None)),
+        )
     db_url = getattr(settings, "DATABASE_URL", None)
     payload = {
         "status": "ok" if ok else "degraded",

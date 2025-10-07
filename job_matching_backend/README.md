@@ -35,12 +35,15 @@ Migrations
 - Ensure .env has a working DATABASE_URL before running migrations.
 
 Troubleshooting
-- Error: "Database not reachable or DATABASE_URL missing: No module named 'psycopg2'"
-  Cause: SQLAlchemy tried to use psycopg2. The backend now pins psycopg v3 automatically.
+- Health shows degraded and mentions DB not reachable or misconfigured
+  Causes:
+    - DATABASE_URL contains special characters (e.g., '@', '[', ']') in the password which can break strict URL parsing.
+    - Network/connectivity issues or invalid credentials.
   Actions:
     1) Ensure requirements installed (psycopg[binary] is included).
-    2) Ensure DATABASE_URL uses postgres or postgresql scheme; the backend rewrites to postgresql+psycopg internally.
-    3) Verify connectivity and credentials to your Supabase Postgres.
+    2) Ensure DATABASE_URL uses postgres or postgresql scheme; the backend rewrites to postgresql+psycopg internally and enforces sslmode=require by default.
+    3) If your password contains special characters, leave it as-is; the backend handles normalization without strict parsing.
+    4) Verify connectivity and credentials to your Supabase Postgres.
 - CORS blocked in browser:
   Ensure CORS_ORIGINS contains the exact Origin (scheme+host+port) or use "*" for dev.
 - See docs/SMOKE_TESTS.md for a focused smoke test checklist (health, DB connectivity, CORS, and key routes).

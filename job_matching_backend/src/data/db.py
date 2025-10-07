@@ -13,6 +13,44 @@ _engine: Engine | None = None
 _SessionLocal = None
 
 
+def _normalize_db_url(db_url: str) -> str:
+    """
+    Normalize a Postgres URL for SQLAlchemy psycopg v3 with sslmode default.
+
+    Strategy:
+    - Prefer structured parse via urlsplit. If that fails (due to special characters in password/host),
+      fallback to light string operations:
+        * Ensure scheme uses postgresql+psycopg for SQLAlchemy.
+        * Append sslmode=require if there is no existing sslmode in the query string.
+    """
+    try:
+        sp = urlsplit(db_url)
+        scheme = sp.scheme
+        if scheme in ("postgres", "postgresql"):
+            driver_scheme = "postgresql+psycopg"
+            query_pairs = dict(parse_qsl(sp.query, keep_blank_values=True))
+            if "sslmode" not in query_pairs:
+                query_pairs["sslmode"] = "require"
+            new_query = urlencode(query_pairs)
+            return urlunsplit((driver_scheme, sp.netloc, sp.path, new_query, sp.fragment))
+        return db_url
+    except Exception:
+        # Fallback: avoid strict parsing. Do minimal normalization safely.
+        normalized = db_url
+        if normalized.startswith("postgres://"):
+            normalized = "postgresql+psycopg://" + normalized[len("postgres://") :]
+        elif normalized.startswith("postgresql://"):
+            normalized = "postgresql+psycopg://" + normalized[len("postgresql://") :]
+        # If there's already a query string, only append sslmode if not present
+        if "?" in normalized:
+            base, qs = normalized.split("?", 1)
+            if "sslmode=" not in qs:
+                normalized = f"{base}?{qs}&sslmode=require"
+        else:
+            normalized = f"{normalized}?sslmode=require"
+        return normalized
+
+
 def _ensure_engine() -> Engine:
     """
     Create and cache a global SQLAlchemy engine.
@@ -30,30 +68,8 @@ def _ensure_engine() -> Engine:
         # Validate DB URL with helpful message if missing
         db_url = settings.require_database_url()
 
-        try:
-            sp = urlsplit(db_url)
-            scheme = sp.scheme
-            # Normalize postgres scheme and pin to psycopg v3 driver
-            # Accept 'postgres://' or 'postgresql://' and convert to 'postgresql+psycopg://'
-            if scheme in ("postgres", "postgresql"):
-                driver_scheme = "postgresql+psycopg"
-                query_pairs = dict(parse_qsl(sp.query, keep_blank_values=True))
-                # Only set if not already provided
-                if "sslmode" not in query_pairs:
-                    query_pairs["sslmode"] = "require"
-                new_query = urlencode(query_pairs)
-
-                # Rebuild URL with explicit driver
-                # urlunsplit expects (scheme, netloc, path, query, fragment)
-                normalized_url = urlunsplit((driver_scheme, sp.netloc, sp.path, new_query, sp.fragment))
-                db_url = normalized_url
-            else:
-                # If a custom SQLAlchemy URL was provided without driver, leave it as-is
-                # but it should already include a working driver.
-                pass
-        except Exception:
-            # If parsing fails, continue with original URL; engine may still handle it.
-            pass
+        # Normalize URL robustly
+        db_url = _normalize_db_url(db_url)
 
         # SQLAlchemy 2.0 style engine using psycopg v3 driver
         _engine = create_engine(
