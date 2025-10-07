@@ -69,13 +69,20 @@ def _dsn_preview(db_url: str | None) -> str | None:
     """Return masked DSN preview for diagnostics."""
     if not db_url:
         return None
-    # Prefer regex first to be resilient to special chars in password
-    m = re.match(r"^(?P<scheme>postgresql|postgres)(?:\\+[^:]*)?://(?P<user>[^:@/]+):[^@]*@(?P<host>[^/:]+)(?::(?P<port>\\d+))?/(?P<db>[^?]+)", db_url)
+    # Tolerant masking: handle passwords with reserved chars and optional +driver
+    m = re.match(
+        r"^(?P<scheme>postgresql|postgres)(?P<driver>\+[^:]*)?://(?P<userinfo>[^@]*)@(?P<hostport>[^/]+)/(?P<db>[^?]+)",
+        db_url,
+    )
     if m:
         scheme = m.group("scheme")
-        user = m.group("user")
-        host = m.group("host")
-        port = m.group("port") or "5432"
+        userinfo = m.group("userinfo") or ""
+        user = userinfo.split(":", 1)[0]
+        hostport = m.group("hostport") or ""
+        if ":" in hostport:
+            host, port = hostport.split(":", 1)
+        else:
+            host, port = hostport, "5432"
         db = m.group("db")
         return f"{scheme}://{user}@{host}:{port}/{db}"
     # Fallback to urlsplit
@@ -85,8 +92,7 @@ def _dsn_preview(db_url: str | None) -> str | None:
         host = sp.hostname or ""
         port = sp.port or 5432
         dbname = sp.path.lstrip("/") if sp.path else ""
-        scheme = sp.scheme
-        scheme = "postgresql" if scheme.startswith("postgresql") else scheme
+        scheme = "postgresql" if sp.scheme.startswith("postgres") else sp.scheme
         return f"{scheme}://{user}@{host}:{port}/{dbname}"
     except Exception:
         return "unparseable"
@@ -139,10 +145,12 @@ def health_check():
         "message": message,
         "sslmode": _effective_sslmode_from_url(db_url),
         "has_database_url": bool(db_url),
+        "has_direct_url": bool(getattr(settings, "DIRECT_URL", None)),
         "dsn_preview": _dsn_preview(db_url),
         "db_scheme": _db_scheme(db_url),
         "tried_direct": tried_direct,
         "db_connection": conn_info,
+        "allow_origins": _current_cors_origins,
     }
     return payload
 
