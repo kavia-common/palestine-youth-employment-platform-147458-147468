@@ -4,6 +4,7 @@ from typing import Generator
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
 from src.core.config import get_settings
 
@@ -18,6 +19,21 @@ def _ensure_engine() -> Engine:
         settings = get_settings()
         # Validate DB URL with helpful message if missing
         db_url = settings.require_database_url()
+
+        # Ensure SSL for hosted Postgres like Supabase unless explicitly provided.
+        try:
+            sp = urlsplit(db_url)
+            if sp.scheme in ("postgres", "postgresql"):
+                query_pairs = dict(parse_qsl(sp.query, keep_blank_values=True))
+                # Only set if not already provided
+                if "sslmode" not in query_pairs:
+                    query_pairs["sslmode"] = "require"
+                    new_query = urlencode(query_pairs)
+                    db_url = urlunsplit((sp.scheme, sp.netloc, sp.path, new_query, sp.fragment))
+        except Exception:
+            # If parsing fails, continue with original URL; engine may still handle it.
+            pass
+
         # SQLAlchemy 2.0 style engine
         _engine = create_engine(db_url, pool_pre_ping=True, pool_size=5, max_overflow=10, future=True)
         _SessionLocal = sessionmaker(bind=_engine, autoflush=False, autocommit=False, future=True)

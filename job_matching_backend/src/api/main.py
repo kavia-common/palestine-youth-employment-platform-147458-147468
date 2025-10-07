@@ -65,6 +65,24 @@ def health_check():
         ok = False
     return {"status": "ok" if ok else "degraded", "env": settings.APP_ENV, "message": message}
 
+
+@app.get("/health", tags=["analytics"], summary="Health Check")
+def health_check_endpoint():
+    """PUBLIC_INTERFACE
+    Health endpoint for uptime probes.
+
+    Returns:
+        JSON containing status ("ok" or "degraded"), environment (settings.APP_ENV), and an optional message.
+    """
+    ok = False
+    message = None
+    try:
+        ok = db_health_check()
+    except Exception as e:
+        message = f"Database not reachable or DATABASE_URL missing: {e}"
+        ok = False
+    return {"status": "ok" if ok else "degraded", "env": settings.APP_ENV, "message": message}
+
 @app.get("/api/realtime", tags=["auth"], summary="Realtime WebSocket usage")
 def realtime_docs():
     """Realtime usage notes.
