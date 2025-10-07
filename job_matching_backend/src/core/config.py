@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     # Database
     # Make optional to avoid import-time crashes. We'll validate at DB access.
     DATABASE_URL: Optional[str] = Field(default=None, description="Postgres connection URI for Supabase Postgres")
+    # Optional fallback: some environments provide a DIRECT_URL without pgbouncer. We may try this if primary fails.
+    DIRECT_URL: Optional[str] = Field(default=None, description="Optional direct Postgres connection URI (fallback)")
 
     # Supabase
     SUPABASE_URL: Optional[AnyHttpUrl] = Field(

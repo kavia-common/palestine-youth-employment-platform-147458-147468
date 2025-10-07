@@ -5,6 +5,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+from sqlalchemy.exc import OperationalError
 
 from src.core.config import get_settings
 
@@ -51,6 +52,17 @@ def _normalize_db_url(db_url: str) -> str:
         return normalized
 
 
+def _build_engine(normalized_url: str) -> Engine:
+    """Create a SQLAlchemy engine with consistent options."""
+    return create_engine(
+        normalized_url,
+        pool_pre_ping=True,
+        pool_size=5,
+        max_overflow=10,
+        future=True,
+    )
+
+
 def _ensure_engine() -> Engine:
     """
     Create and cache a global SQLAlchemy engine.
@@ -65,21 +77,36 @@ def _ensure_engine() -> Engine:
     global _engine, _SessionLocal
     if _engine is None:
         settings = get_settings()
-        # Validate DB URL with helpful message if missing
-        db_url = settings.require_database_url()
-
+        # Primary URL or raise if not provided
+        primary_url = settings.require_database_url()
         # Normalize URL robustly
-        db_url = _normalize_db_url(db_url)
+        primary_norm = _normalize_db_url(primary_url)
 
-        # SQLAlchemy 2.0 style engine using psycopg v3 driver
-        _engine = create_engine(
-            db_url,
-            pool_pre_ping=True,
-            pool_size=5,
-            max_overflow=10,
-            future=True,
-        )
-        _SessionLocal = sessionmaker(bind=_engine, autoflush=False, autocommit=False, future=True)
+        # Attempt primary engine first; if it fails, try DIRECT_URL (if present)
+        last_error: Exception | None = None
+        for candidate in (primary_norm, _normalize_db_url(settings.DIRECT_URL) if settings.DIRECT_URL else None):
+            if not candidate:
+                continue
+            try:
+                eng = _build_engine(candidate)
+                # Test connection quickly
+                with eng.connect() as conn:
+                    conn.execute(text("select 1"))
+                _engine = eng
+                _SessionLocal = sessionmaker(bind=_engine, autoflush=False, autocommit=False, future=True)
+                break
+            except OperationalError as oe:
+                last_error = oe
+                continue
+            except Exception as e:
+                last_error = e
+                continue
+
+        if _engine is None:
+            # Surface the last error for clarity
+            if last_error:
+                raise last_error
+            raise RuntimeError("Failed to initialize database engine: no valid DATABASE_URL/DIRECT_URL candidates")
     return _engine
 
 

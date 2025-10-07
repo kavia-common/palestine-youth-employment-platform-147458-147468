@@ -69,6 +69,16 @@ def _dsn_preview(db_url: str | None) -> str | None:
     """Return masked DSN preview for diagnostics."""
     if not db_url:
         return None
+    # Prefer regex first to be resilient to special chars in password
+    m = re.match(r"^(?P<scheme>postgresql|postgres)(?:\\+[^:]*)?://(?P<user>[^:@/]+):[^@]*@(?P<host>[^/:]+)(?::(?P<port>\\d+))?/(?P<db>[^?]+)", db_url)
+    if m:
+        scheme = m.group("scheme")
+        user = m.group("user")
+        host = m.group("host")
+        port = m.group("port") or "5432"
+        db = m.group("db")
+        return f"{scheme}://{user}@{host}:{port}/{db}"
+    # Fallback to urlsplit
     try:
         sp = urlsplit(db_url)
         user = sp.username or ""
@@ -76,19 +86,9 @@ def _dsn_preview(db_url: str | None) -> str | None:
         port = sp.port or 5432
         dbname = sp.path.lstrip("/") if sp.path else ""
         scheme = sp.scheme
-        # If we normalized to postgresql+psycopg in engine, display as postgresql for readability
         scheme = "postgresql" if scheme.startswith("postgresql") else scheme
         return f"{scheme}://{user}@{host}:{port}/{dbname}"
     except Exception:
-        # Fallback: attempt a light regex to extract parts without choking on password chars
-        m = re.match(r"^(?P<scheme>postgresql|postgres)(?:\\+[^:]*)?://(?P<user>[^:@/]+):[^@]*@(?P<host>[^/:]+)(?::(?P<port>\\d+))?/(?P<db>[^?]+)", db_url)
-        if m:
-            scheme = m.group("scheme")
-            user = m.group("user")
-            host = m.group("host")
-            port = m.group("port") or "5432"
-            db = m.group("db")
-            return f"{scheme}://{user}@{host}:{port}/{db}"
         return "unparseable"
 
 def _db_scheme(db_url: str | None) -> str | None:
