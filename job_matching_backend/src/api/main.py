@@ -16,6 +16,7 @@ from src.api.routers.employers import router as employers_router
 from src.core.config import get_settings, get_cors_origins
 from src.core.logging import configure_logging
 from src.data.db import health_check as db_health_check
+from urllib.parse import urlsplit, parse_qsl
 
 settings = get_settings()
 configure_logging()
@@ -103,6 +104,50 @@ def realtime_docs():
             "realtime:public:analytics_events",
         ],
         "token_endpoint": "/api/auth/realtime-token/{user_id}",
+    }
+
+@app.get("/api/debug/db-config", tags=["analytics"], summary="Debug DB config (masked)")
+def debug_db_config():
+    """PUBLIC_INTERFACE
+    Debug endpoint to inspect database configuration safely (masked).
+    Enabled only when DEBUG_DB_CONFIG=true in environment.
+
+    Returns:
+        JSON with:
+        - enabled: whether this endpoint is active
+        - has_database_url: bool indicating if DATABASE_URL is set
+        - dsn_preview: "postgresql://user@host:port/dbname" (password omitted)
+        - sslmode: effective sslmode detected from the connection string (after normalization)
+    """
+    enabled = str(getattr(settings, "DEBUG_DB_CONFIG", "false")).lower() == "true"
+    if not enabled:
+        return {"enabled": False}
+
+    db_url = settings.DATABASE_URL or ""
+    has_database_url = bool(db_url)
+    dsn_preview = None
+    sslmode = None
+
+    if has_database_url:
+        try:
+            sp = urlsplit(db_url)
+            # mask password in preview
+            user = sp.username or ""
+            host = sp.hostname or ""
+            port = sp.port or 5432
+            dbname = sp.path.lstrip("/") if sp.path else ""
+            dsn_preview = f"{sp.scheme}://{user}@{host}:{port}/{dbname}"
+            params = dict(parse_qsl(sp.query, keep_blank_values=True))
+            sslmode = params.get("sslmode", "require")  # db.py enforces require if unspecified
+        except Exception:
+            dsn_preview = "unparseable"
+            sslmode = None
+
+    return {
+        "enabled": True,
+        "has_database_url": has_database_url,
+        "dsn_preview": dsn_preview,
+        "sslmode": sslmode,
     }
 
 # Include routers
