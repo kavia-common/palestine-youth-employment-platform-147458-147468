@@ -197,6 +197,7 @@ def health_check_endpoint():
         "db_scheme": _db_scheme(db_url),
         "tried_direct": tried_direct,
         "db_connection": conn_info,
+        "allow_origins": _current_cors_origins,
     }
     return payload
 

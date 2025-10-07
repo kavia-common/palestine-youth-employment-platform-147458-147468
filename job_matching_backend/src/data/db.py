@@ -4,7 +4,7 @@ from typing import Generator, Optional, Tuple, Dict
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
-from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+from urllib.parse import urlsplit, parse_qsl
 
 
 from src.core.config import get_settings
@@ -29,38 +29,31 @@ def _normalize_db_url(db_url: str) -> str:
     """
     Normalize a Postgres URL for SQLAlchemy psycopg v3 with sslmode default.
 
-    Strategy:
-    - Prefer structured parse via urlsplit. If that fails (due to special characters in password/host),
-      fallback to light string operations:
-        * Ensure scheme uses postgresql+psycopg for SQLAlchemy.
-        * Append sslmode=require if there is no existing sslmode in the query string.
+    Robust rules:
+    - Do not rely on strict parsing for secrets containing special chars; perform minimal string normalization.
+    - Force scheme to postgresql+psycopg for SQLAlchemy.
+    - Ensure sslmode=require if not present.
     """
-    try:
-        sp = urlsplit(db_url)
-        scheme = sp.scheme
-        if scheme in ("postgres", "postgresql"):
-            driver_scheme = "postgresql+psycopg"
-            query_pairs = dict(parse_qsl(sp.query, keep_blank_values=True))
-            if "sslmode" not in query_pairs:
-                query_pairs["sslmode"] = "require"
-            new_query = urlencode(query_pairs)
-            return urlunsplit((driver_scheme, sp.netloc, sp.path, new_query, sp.fragment))
-        return db_url
-    except Exception:
-        # Fallback: avoid strict parsing. Do minimal normalization safely.
-        normalized = db_url
-        if normalized.startswith("postgres://"):
-            normalized = "postgresql+psycopg://" + normalized[len("postgres://") :]
-        elif normalized.startswith("postgresql://"):
-            normalized = "postgresql+psycopg://" + normalized[len("postgresql://") :]
-        # If there's already a query string, only append sslmode if not present
-        if "?" in normalized:
-            base, qs = normalized.split("?", 1)
-            if "sslmode=" not in qs:
-                normalized = f"{base}?{qs}&sslmode=require"
-        else:
-            normalized = f"{normalized}?sslmode=require"
-        return normalized
+    normalized = db_url.strip()
+
+    # Force SQLAlchemy psycopg v3 driver scheme
+    if normalized.startswith("postgres://"):
+        normalized = "postgresql+psycopg://" + normalized[len("postgres://") :]
+    elif normalized.startswith("postgresql://"):
+        normalized = "postgresql+psycopg://" + normalized[len("postgresql://") :]
+    elif normalized.startswith("postgresql+psycopg://"):
+        pass  # already normalized
+    # else: leave other schemes untouched (e.g., sqlite for tests)
+
+    # Ensure sslmode=require if not present in query
+    if "?" in normalized:
+        base, qs = normalized.split("?", 1)
+        if "sslmode=" not in qs:
+            normalized = f"{base}?{qs}&sslmode=require"
+    else:
+        normalized = f"{normalized}?sslmode=require"
+
+    return normalized
 
 
 def _mask_dsn_preview(url: str) -> str:
@@ -106,15 +99,10 @@ def _ensure_engine(prefer_direct: bool = False) -> Engine:
     """
     Create and cache a global SQLAlchemy engine.
 
-    Notes:
-    - Forces SQLAlchemy to use the psycopg v3 driver by rewriting to 'postgresql+psycopg://'
-      when the scheme is 'postgres' or 'postgresql'.
-    - Enforces 'sslmode=require' by default for Supabase/hosted Postgres unless explicitly set
-      in the connection URL.
-    - Attempts both DATABASE_URL and DIRECT_URL automatically. If prefer_direct=True, DIRECT_URL
-      is tried first; otherwise DATABASE_URL is tried first. Regardless of the first attempt,
-      the other candidate is also attempted before failing. This improves resilience when pgbouncer
-      endpoints reject certain operations while direct connections succeed.
+    Behavior:
+    - Normalize to postgresql+psycopg and enforce sslmode=require.
+    - Attempt both DATABASE_URL and DIRECT_URL automatically, honoring prefer_direct.
+    - If initial attempt fails, automatically try the other candidate before erroring.
     """
     global _engine, _SessionLocal, _engine_source, _engine_normalized_url
     if _engine is None:
@@ -131,15 +119,11 @@ def _ensure_engine(prefer_direct: bool = False) -> Engine:
         else:
             ordered = [("DATABASE_URL", raw_db), ("DIRECT_URL", raw_direct)]
 
-        # Build normalized candidate list, skipping Nones, and ensure uniqueness by source name
+        # Build normalized candidate list, skipping Nones
         candidates: list[Tuple[str, str]] = []
-        seen_sources: set[str] = set()
         for src, url in ordered:
-            if src in seen_sources:
-                continue
             if url:
                 candidates.append((src, _normalize_db_url(url)))
-                seen_sources.add(src)
 
         # If still no candidates, require DATABASE_URL (raises helpful error)
         if not candidates:
@@ -159,6 +143,22 @@ def _ensure_engine(prefer_direct: bool = False) -> Engine:
                 break
             else:
                 last_error = err
+
+        # If first pass failed completely, and we had both candidates, swap order and retry once
+        if _engine is None and len(candidates) == 2:
+            swapped = [(candidates[1][0], candidates[1][1]), (candidates[0][0], candidates[0][1])]
+            for source_name, candidate in swapped:
+                eng, err = _try_connect(candidate)
+                if eng is not None:
+                    _engine = eng
+                    _engine_source = source_name
+                    globals()["_engine_normalized_url_full"] = candidate
+                    _engine_normalized_url = _mask_dsn_preview(candidate)
+                    _SessionLocal = sessionmaker(bind=_engine, autoflush=False, autocommit=False, future=True)
+                    last_error = None
+                    break
+                else:
+                    last_error = err
 
         if _engine is None:
             if last_error:

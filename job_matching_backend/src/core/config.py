@@ -85,6 +85,7 @@ def get_cors_origins(settings: Settings) -> List[str]:
     - If CORS_ORIGINS is "*" allow all.
     - In development (APP_ENV=development), ensure http://localhost:3000 is included for local frontend dev,
       unless "*" is used or it is already present.
+    - Use /api/debug/cors to inspect effective values at runtime.
     """
     raw = settings.CORS_ORIGINS.strip()
     if not raw or raw == "*":
