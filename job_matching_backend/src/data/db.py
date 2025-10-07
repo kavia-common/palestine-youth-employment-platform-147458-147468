@@ -148,7 +148,7 @@ def _ensure_engine(prefer_direct: bool = False) -> Engine:
     Behavior:
     - Normalize to postgresql+psycopg and enforce sslmode=require.
     - Attempt both DATABASE_URL and DIRECT_URL automatically, honoring prefer_direct.
-    - If initial attempt fails, automatically try the other candidate before erroring.
+    - If the preferred candidate fails, immediately attempt the alternate before failing.
     """
     global _engine, _SessionLocal, _engine_source, _engine_normalized_url
     if _engine is None:
@@ -159,10 +159,11 @@ def _ensure_engine(prefer_direct: bool = False) -> Engine:
         raw_direct = settings.DIRECT_URL
 
         # Construct ordered attempts based on preference
-        if prefer_direct:
-            ordered_pairs: list[tuple[str, Optional[str]]] = [("DIRECT_URL", raw_direct), ("DATABASE_URL", raw_db)]
-        else:
-            ordered_pairs = [("DATABASE_URL", raw_db), ("DIRECT_URL", raw_direct)]
+        ordered_pairs: list[tuple[str, Optional[str]]] = (
+            [("DIRECT_URL", raw_direct), ("DATABASE_URL", raw_db)]
+            if prefer_direct
+            else [("DATABASE_URL", raw_db), ("DIRECT_URL", raw_direct)]
+        )
 
         # Build normalized candidate list, skipping missing values
         candidates: list[Tuple[str, str]] = []
@@ -177,7 +178,7 @@ def _ensure_engine(prefer_direct: bool = False) -> Engine:
 
         last_error: Exception | None = None
 
-        # Try candidates in order
+        # Try candidates in order; attempt all once in the defined order
         for source_name, candidate in candidates:
             eng, err = _try_connect(candidate)
             if eng is not None:
@@ -192,22 +193,8 @@ def _ensure_engine(prefer_direct: bool = False) -> Engine:
             else:
                 last_error = err
 
-        # If first pass failed and we have another option, swap order and retry once
-        if _engine is None and len(candidates) > 1:
-            for source_name, candidate in reversed(candidates):
-                eng, err = _try_connect(candidate)
-                if eng is not None:
-                    _engine = eng
-                    _engine_source = source_name
-                    globals()["_engine_normalized_url_full"] = candidate
-                    _engine_normalized_url = _mask_dsn_preview(candidate)
-                    _SessionLocal = sessionmaker(bind=_engine, autoflush=False, autocommit=False, future=True)
-                    last_error = None
-                    break
-                else:
-                    last_error = err
-
         if _engine is None:
+            # No candidate worked; raise the last encountered error for visibility
             if last_error:
                 raise last_error
             raise RuntimeError("Failed to initialize database engine: no valid DATABASE_URL/DIRECT_URL candidates")
@@ -229,12 +216,13 @@ def get_effective_connection_info() -> Dict[str, Optional[str]]:
     - sslmode: effective sslmode (require if unspecified)
     - scheme: normalized SQLAlchemy scheme (e.g., postgresql+psycopg)
     """
-    # Ensure engine attempted initialization (without forcing)
+    # Try to ensure engine to capture normalized URL if possible
     try:
         _ensure_engine()
     except Exception:
         # ignore, diagnostics may still be useful
         pass
+
     # Touch the variable to ensure static analyzers consider it used when set/reset in other flows
     _ = _engine_normalized_url_full
 
@@ -243,15 +231,24 @@ def get_effective_connection_info() -> Dict[str, Optional[str]]:
         "dsn_preview": _engine_normalized_url,
         "sslmode": None,
         "scheme": None,
-        # Expose a masked indicator whether full URL was captured without leaking secrets
         "_has_full_url": "true" if _engine_normalized_url_full else "false",
     }
-    # Derive sslmode and scheme from normalized URL we stored, if available
-    # Prefer parsing from the full normalized URL (not masked) for accurate query parsing
-    target_for_parse = None
+
+    # Derive sslmode and scheme from the best available URL:
+    # 1) full normalized URL from engine
+    # 2) masked normalized URL
+    # 3) normalize env DATABASE_URL/DIRECT_URL and parse
+    target_for_parse: Optional[str] = None
     try:
-        # Explicitly reference full URL to satisfy static analysis and to prefer accurate parsing
         target_for_parse = _engine_normalized_url_full or _engine_normalized_url
+        if not target_for_parse:
+            settings = get_settings()
+            # prefer DATABASE_URL for reporting; if not present use DIRECT_URL
+            env_url = settings.DATABASE_URL or settings.DIRECT_URL
+            if env_url:
+                target_for_parse = _normalize_db_url(env_url)
+                # Also set a masked preview for better UX
+                info["dsn_preview"] = _mask_dsn_preview(target_for_parse)
         if target_for_parse:
             sp = urlsplit(target_for_parse)
             info["scheme"] = sp.scheme

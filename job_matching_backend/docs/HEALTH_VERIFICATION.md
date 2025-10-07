@@ -42,3 +42,13 @@ Notes:
 - Ensure .env has DATABASE_URL configured. DIRECT_URL is optional but recommended for fallback.
 - The backend normalizes URLs to postgresql+psycopg and enforces sslmode=require if unspecified.
 - Sensitive values are masked in responses and logs.
+
+Live verification snapshot (latest):
+- GET / returned HTTP 200 with payload status="degraded"; message indicated psycopg.OperationalError: [Errno -2] Name or service not known.
+- GET /health returned identical degraded payload.
+- CORS allow_origins included ["*", "http://localhost:3000"].
+- sslmode reported as "require".
+
+After patch:
+- Engine initialization attempts both DATABASE_URL and DIRECT_URL within the same call; health endpoints will succeed when either is valid.
+- Diagnostics now populate scheme and dsn_preview from env even if engine init fails, to avoid "unparseable" where possible.
