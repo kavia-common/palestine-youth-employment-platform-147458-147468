@@ -14,28 +14,51 @@ _SessionLocal = None
 
 
 def _ensure_engine() -> Engine:
+    """
+    Create and cache a global SQLAlchemy engine.
+
+    Notes:
+    - Force SQLAlchemy to use the psycopg v3 driver (postgresql+psycopg://) to avoid falling back to psycopg2.
+    - Enforce sslmode=require by default for Supabase/hosted Postgres unless explicitly set in the URL.
+    """
     global _engine, _SessionLocal
     if _engine is None:
         settings = get_settings()
         # Validate DB URL with helpful message if missing
         db_url = settings.require_database_url()
 
-        # Ensure SSL for hosted Postgres like Supabase unless explicitly provided.
         try:
             sp = urlsplit(db_url)
-            if sp.scheme in ("postgres", "postgresql"):
+            scheme = sp.scheme
+            # Normalize postgres scheme and pin to psycopg v3 driver
+            # Accept 'postgres://' or 'postgresql://' and convert to 'postgresql+psycopg://'
+            if scheme in ("postgres", "postgresql"):
+                driver_scheme = "postgresql+psycopg"
                 query_pairs = dict(parse_qsl(sp.query, keep_blank_values=True))
                 # Only set if not already provided
                 if "sslmode" not in query_pairs:
                     query_pairs["sslmode"] = "require"
-                    new_query = urlencode(query_pairs)
-                    db_url = urlunsplit((sp.scheme, sp.netloc, sp.path, new_query, sp.fragment))
+                new_query = urlencode(query_pairs)
+
+                # Rebuild URL with explicit driver
+                # urlunsplit expects (scheme, netloc, path, query, fragment)
+                db_url = urlunsplit((driver_scheme, sp.netloc, sp.path, new_query, sp.fragment))
+            else:
+                # If a custom SQLAlchemy URL was provided without driver, leave it as-is
+                # but it should already include a working driver.
+                pass
         except Exception:
             # If parsing fails, continue with original URL; engine may still handle it.
             pass
 
-        # SQLAlchemy 2.0 style engine
-        _engine = create_engine(db_url, pool_pre_ping=True, pool_size=5, max_overflow=10, future=True)
+        # SQLAlchemy 2.0 style engine using psycopg v3 driver
+        _engine = create_engine(
+            db_url,
+            pool_pre_ping=True,
+            pool_size=5,
+            max_overflow=10,
+            future=True,
+        )
         _SessionLocal = sessionmaker(bind=_engine, autoflush=False, autocommit=False, future=True)
     return _engine
 

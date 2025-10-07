@@ -22,6 +22,7 @@ Checks:
 3) CORS
 - Set CORS_ORIGINS to http://localhost:3000 (for frontend dev server).
 - Backend allows credentials, methods, and headers for those origins.
+- If you see browser CORS errors, ensure the exact Origin (scheme+host+port) is present in CORS_ORIGINS or use "*" for unrestricted (dev only).
 
 4) Key routes
 - GET /api/analytics/counts -> returns counts for users, jobs, applications
