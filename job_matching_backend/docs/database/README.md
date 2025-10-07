@@ -39,6 +39,14 @@ How to run (Supabase SQL Editor):
 - Open the SQL Editor in your Supabase project.
 - Execute each script in the order above. All scripts are idempotent or guarded to reduce re-run errors.
 
+How to run (psql helper script - recommended):
+- Ensure .env has a valid DATABASE_URL for your Supabase Postgres (do not hardcode secrets in code).
+- From the job_matching_backend directory:
+  chmod +x scripts/run_migrations.sh
+  ./scripts/run_migrations.sh
+- To load development seed data as well:
+  RUN_SEED=true ./scripts/run_migrations.sh
+
 How to run (supabase CLI):
 - Ensure you have the Supabase CLI installed and authenticated.
 - You can concatenate and run per file order:
