@@ -51,13 +51,19 @@ app.add_middleware(
 
 @app.get("/", tags=["analytics"], summary="Health Check")
 def health_check():
-    """Return a simple health check status with database connectivity."""
+    """Return a simple health check status with database connectivity.
+
+    If DATABASE_URL is not configured, the service reports 'degraded' with a message
+    to help configure environment variables properly.
+    """
     ok = False
+    message = None
     try:
         ok = db_health_check()
-    except Exception:
+    except Exception as e:
+        message = f"Database not reachable or DATABASE_URL missing: {e}"
         ok = False
-    return {"status": "ok" if ok else "degraded", "env": settings.APP_ENV}
+    return {"status": "ok" if ok else "degraded", "env": settings.APP_ENV, "message": message}
 
 @app.get("/api/realtime", tags=["auth"], summary="Realtime WebSocket usage")
 def realtime_docs():

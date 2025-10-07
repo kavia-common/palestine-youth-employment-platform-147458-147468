@@ -16,8 +16,10 @@ def _ensure_engine() -> Engine:
     global _engine, _SessionLocal
     if _engine is None:
         settings = get_settings()
+        # Validate DB URL with helpful message if missing
+        db_url = settings.require_database_url()
         # SQLAlchemy 2.0 style engine
-        _engine = create_engine(settings.DATABASE_URL, pool_pre_ping=True, pool_size=5, max_overflow=10, future=True)
+        _engine = create_engine(db_url, pool_pre_ping=True, pool_size=5, max_overflow=10, future=True)
         _SessionLocal = sessionmaker(bind=_engine, autoflush=False, autocommit=False, future=True)
     return _engine
 

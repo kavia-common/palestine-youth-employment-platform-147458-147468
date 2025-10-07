@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import List, Optional
 
-from pydantic import Field, AnyHttpUrl
+from pydantic import Field, AnyHttpUrl, AliasChoices
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,12 +17,25 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = Field(default="*", description="Comma separated list of allowed origins")
 
     # Database
-    DATABASE_URL: str = Field(..., description="Postgres connection URI for Supabase Postgres")
+    # Make optional to avoid import-time crashes. We'll validate at DB access.
+    DATABASE_URL: Optional[str] = Field(default=None, description="Postgres connection URI for Supabase Postgres")
 
     # Supabase
-    SUPABASE_URL: Optional[AnyHttpUrl] = Field(default=None, description="Supabase project URL")
-    SUPABASE_SERVICE_KEY: Optional[str] = Field(default=None, description="Supabase service role key")
-    SUPABASE_ANON_KEY: Optional[str] = Field(default=None, description="Supabase anon key for client features")
+    SUPABASE_URL: Optional[AnyHttpUrl] = Field(
+        default=None,
+        description="Supabase project URL",
+    )
+    # Accept multiple env var spellings: SUPABASE_SERVICE_KEY (preferred) and SUPABASE_KEY / supabase_key (legacy).
+    SUPABASE_SERVICE_KEY: Optional[str] = Field(
+        default=None,
+        description="Supabase service role key",
+        validation_alias=AliasChoices("SUPABASE_SERVICE_KEY", "SUPABASE_KEY", "supabase_key"),
+    )
+    SUPABASE_ANON_KEY: Optional[str] = Field(
+        default=None,
+        description="Supabase anon key for client features",
+        validation_alias=AliasChoices("SUPABASE_ANON_KEY", "supabase_anon_key"),
+    )
     SUPABASE_JWT_SECRET: Optional[str] = Field(default=None, description="Supabase JWT secret for realtime channels")
 
     # Auth/JWT
@@ -38,7 +51,21 @@ class Settings(BaseSettings):
     EMAIL_PROVIDER_API_KEY: Optional[str] = Field(default=None, description="Email provider API key")
     SMS_PROVIDER_API_KEY: Optional[str] = Field(default=None, description="SMS provider API key")
 
-    model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)
+    # Pydantic v2 settings: no env prefix, ignore extra unknown vars to prevent extra_forbidden
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, env_prefix="", extra="ignore")
+
+    # PUBLIC_INTERFACE
+    def require_database_url(self) -> str:
+        """Return DATABASE_URL or raise a clear, actionable error message."""
+        if self.DATABASE_URL:
+            return self.DATABASE_URL
+        # Provide helpful guidance about configuration.
+        raise RuntimeError(
+            "DATABASE_URL is not configured. Provide a Postgres connection string via DATABASE_URL. "
+            "If you intend to rely on Supabase, ensure your Supabase project provides a database URL "
+            "and set it here. Environment variables acknowledged: DATABASE_URL, SUPABASE_URL, "
+            "SUPABASE_SERVICE_KEY/ANON_KEY. Note: The backend requires DATABASE_URL when accessing the DB."
+        )
 
 
 # PUBLIC_INTERFACE
