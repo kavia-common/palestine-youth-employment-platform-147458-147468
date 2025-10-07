@@ -30,16 +30,37 @@ if [ -z "${DATABASE_URL:-}" ]; then
   exit 1
 fi
 
-# Parse DATABASE_URL to discrete psql env vars to avoid issues with special characters and query params.
-# Expected format: postgresql://user:password@host:port/dbname[?params]
+# Parse DATABASE_URL to discrete psql env vars using urllib.parse to handle special characters safely.
 parse_output="$(python3 - <<'PY'
-import os, re, sys
-url = os.getenv("DATABASE_URL","").strip()
-m = re.match(r"^postgresql://([^:]+):([^@]+)@([^:/]+):([0-9]+)/([^?]+)", url)
-if not m:
-    print(f"ERROR: Invalid DATABASE_URL format: {url}", file=sys.stderr)
+import os, sys
+from urllib.parse import urlparse
+
+url = os.getenv("DATABASE_URL", "").strip()
+if not url:
+    print("ERROR: DATABASE_URL is empty", file=sys.stderr)
     sys.exit(2)
-user, pw, host, port, db = m.groups()
+
+# Allow both postgres:// and postgresql://
+if url.startswith("postgres://"):
+    # SQLAlchemy and libpq accept both, urlparse does as well
+    pass
+
+parsed = urlparse(url)
+if parsed.scheme not in ("postgres", "postgresql"):
+    print(f"ERROR: Unsupported scheme in DATABASE_URL: {parsed.scheme}", file=sys.stderr)
+    sys.exit(2)
+
+# Extract components and handle defaults
+user = parsed.username or ""
+pw = parsed.password or ""
+host = parsed.hostname or "localhost"
+port = str(parsed.port or 5432)
+db = (parsed.path or "").lstrip("/")
+if not db:
+    print("ERROR: DATABASE_URL missing database name", file=sys.stderr)
+    sys.exit(2)
+
+# Print as key=value pairs; shell will capture and export them below.
 print(f"PGUSER={user}")
 print(f"PGPASSWORD={pw}")
 print(f"PGHOST={host}")
