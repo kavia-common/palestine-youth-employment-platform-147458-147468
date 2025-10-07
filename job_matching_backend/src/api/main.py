@@ -91,7 +91,7 @@ def _db_scheme(db_url: str | None) -> str | None:
     except Exception:
         return None
 
-@app.get("/", tags=["analytics"], summary="Health Check")
+@app.get("/", tags=["analytics"], summary="Health Check", operation_id="health_check__get")
 def health_check():
     """Return a simple health check status with database connectivity.
 
@@ -112,7 +112,9 @@ def health_check():
             ok = db_health_check(prefer_direct=True)
             tried_direct = True
             if ok:
-                message = None  # cleared on successful fallback
+                message = None
+                logger.info("Health check succeeded via DIRECT_URL fallback (/health endpoint).")  # cleared on successful fallback
+                logger.info("Health check succeeded via DIRECT_URL fallback (root endpoint).")
         except Exception as e2:
             message = f"Database not reachable or misconfigured: {str(e2)}"
             ok = False
@@ -142,7 +144,7 @@ def health_check():
     return payload
 
 
-@app.get("/health", tags=["analytics"], summary="Health Check")
+@app.get("/health", tags=["analytics"], summary="Health Check", operation_id="health_check_endpoint_health_get")
 def health_check_endpoint():
     """PUBLIC_INTERFACE
     Health endpoint for uptime probes.
@@ -190,7 +192,7 @@ def health_check_endpoint():
     }
     return payload
 
-@app.get("/api/realtime", tags=["auth"], summary="Realtime WebSocket usage")
+@app.get("/api/realtime", tags=["auth"], summary="Realtime WebSocket usage", operation_id="realtime_docs_api_realtime_get")
 def realtime_docs():
     """Realtime usage notes.
 
@@ -212,7 +214,13 @@ def realtime_docs():
         "token_endpoint": "/api/auth/realtime-token/{user_id}",
     }
 
-@app.get("/api/debug/db-config", tags=["analytics"], summary="Debug DB config (masked)")
+@app.get(
+    "/api/debug/db-config",
+    tags=["analytics"],
+    summary="Debug DB config (masked)",
+    description="PUBLIC_INTERFACE\nDebug endpoint to inspect database configuration safely (masked).\nEnabled only when DEBUG_DB_CONFIG=true in environment.\n\nReturns:\n    JSON with:\n    - enabled: whether this endpoint is active\n    - has_database_url: bool indicating if DATABASE_URL is set\n    - dsn_preview: \"postgresql://user@host:port/dbname\" (password omitted)\n    - sslmode: effective sslmode detected from the connection string (after normalization)",
+    operation_id="debug_db_config_api_debug_db_config_get",
+)
 def debug_db_config():
     """PUBLIC_INTERFACE
     Debug endpoint to inspect database configuration safely (masked).
