@@ -17,7 +17,7 @@ from src.api.routers.jobseekers import router as jobseekers_router
 from src.api.routers.employers import router as employers_router
 from src.core.config import get_settings, get_cors_origins
 from src.core.logging import configure_logging
-from src.data.db import health_check as db_health_check
+from src.data.db import health_check as db_health_check, get_effective_connection_info
 from urllib.parse import urlsplit, parse_qsl
 
 settings = get_settings()
@@ -109,18 +109,30 @@ def health_check():
     """
     ok = False
     message = None
+    tried_direct = False
     try:
         ok = db_health_check()
     except Exception as e:
-        # Avoid implying psycopg2; surface concise message
+        # First attempt failed; try fallback to DIRECT_URL if available
         message = f"Database not reachable or misconfigured: {str(e)}"
-        ok = False
-        logger.warning(
-            "Health degraded: %s | sslmode=%s",
-            message,
-            _effective_sslmode_from_url(getattr(settings, "DATABASE_URL", None)),
-        )
+        try:
+            ok = db_health_check(prefer_direct=True)
+            tried_direct = True
+            if ok:
+                message = None  # cleared on successful fallback
+        except Exception as e2:
+            message = f"Database not reachable or misconfigured: {str(e2)}"
+            ok = False
+
+        if not ok:
+            logger.warning(
+                "Health degraded: %s | sslmode=%s",
+                message,
+                _effective_sslmode_from_url(getattr(settings, "DATABASE_URL", None)),
+            )
+
     db_url = getattr(settings, "DATABASE_URL", None)
+    conn_info = get_effective_connection_info()
     payload = {
         "status": "ok" if ok else "degraded",
         "env": settings.APP_ENV,
@@ -129,6 +141,8 @@ def health_check():
         "has_database_url": bool(db_url),
         "dsn_preview": _dsn_preview(db_url),
         "db_scheme": _db_scheme(db_url),
+        "tried_direct": tried_direct,
+        "db_connection": conn_info,
     }
     return payload
 
@@ -143,17 +157,27 @@ def health_check_endpoint():
     """
     ok = False
     message = None
+    tried_direct = False
     try:
         ok = db_health_check()
     except Exception as e:
         message = f"Database not reachable or misconfigured: {str(e)}"
-        ok = False
-        logger.warning(
-            "Health degraded: %s | sslmode=%s",
-            message,
-            _effective_sslmode_from_url(getattr(settings, "DATABASE_URL", None)),
-        )
+        try:
+            ok = db_health_check(prefer_direct=True)
+            tried_direct = True
+            if ok:
+                message = None
+        except Exception as e2:
+            message = f"Database not reachable or misconfigured: {str(e2)}"
+            ok = False
+        if not ok:
+            logger.warning(
+                "Health degraded: %s | sslmode=%s",
+                message,
+                _effective_sslmode_from_url(getattr(settings, "DATABASE_URL", None)),
+            )
     db_url = getattr(settings, "DATABASE_URL", None)
+    conn_info = get_effective_connection_info()
     payload = {
         "status": "ok" if ok else "degraded",
         "env": settings.APP_ENV,
@@ -162,6 +186,8 @@ def health_check_endpoint():
         "has_database_url": bool(db_url),
         "dsn_preview": _dsn_preview(db_url),
         "db_scheme": _db_scheme(db_url),
+        "tried_direct": tried_direct,
+        "db_connection": conn_info,
     }
     return payload
 
