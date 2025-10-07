@@ -77,11 +77,21 @@ class Settings(BaseSettings):
 
 # PUBLIC_INTERFACE
 def get_cors_origins(settings: Settings) -> List[str]:
-    """Return parsed list of CORS origins from settings."""
+    """Return parsed list of CORS origins from settings.
+
+    Behavior:
+    - If CORS_ORIGINS is "*" allow all.
+    - In development (APP_ENV=development), ensure http://localhost:3000 is included for local frontend dev,
+      unless "*" is used or it is already present.
+    """
     raw = settings.CORS_ORIGINS.strip()
     if not raw or raw == "*":
         return ["*"]
-    return [o.strip() for o in raw.split(",") if o.strip()]
+    origins = [o.strip() for o in raw.split(",") if o.strip()]
+    if settings.APP_ENV.lower() == "development":
+        if "http://localhost:3000" not in origins:
+            origins.append("http://localhost:3000")
+    return origins
 
 
 # PUBLIC_INTERFACE

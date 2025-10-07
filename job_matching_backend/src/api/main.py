@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+import logging
 
 from src.api.routers.auth import router as auth_router
 from src.api.routers.users import router as users_router
@@ -20,6 +21,7 @@ from urllib.parse import urlsplit, parse_qsl
 
 settings = get_settings()
 configure_logging()
+logger = logging.getLogger("health")
 
 openapi_tags = [
     {"name": "auth", "description": "Authentication and tokens"},
@@ -50,6 +52,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+def _effective_sslmode_from_url(db_url: str | None) -> str | None:
+    if not db_url:
+        return None
+    try:
+        sp = urlsplit(db_url)
+        params = dict(parse_qsl(sp.query, keep_blank_values=True))
+        return params.get("sslmode", "require")
+    except Exception:
+        return None
+
 @app.get("/", tags=["analytics"], summary="Health Check")
 def health_check():
     """Return a simple health check status with database connectivity.
@@ -64,7 +76,13 @@ def health_check():
     except Exception as e:
         message = f"Database not reachable or DATABASE_URL missing: {e}"
         ok = False
-    return {"status": "ok" if ok else "degraded", "env": settings.APP_ENV, "message": message}
+        logger.warning("Health degraded: %s", message)
+    payload = {"status": "ok" if ok else "degraded", "env": settings.APP_ENV, "message": message}
+    # Non-sensitive diagnostic: include effective sslmode if available
+    sslmode = _effective_sslmode_from_url(getattr(settings, "DATABASE_URL", None))
+    if sslmode:
+        payload["sslmode"] = sslmode
+    return payload
 
 
 @app.get("/health", tags=["analytics"], summary="Health Check")
@@ -82,7 +100,12 @@ def health_check_endpoint():
     except Exception as e:
         message = f"Database not reachable or DATABASE_URL missing: {e}"
         ok = False
-    return {"status": "ok" if ok else "degraded", "env": settings.APP_ENV, "message": message}
+        logger.warning("Health degraded: %s", message)
+    payload = {"status": "ok" if ok else "degraded", "env": settings.APP_ENV, "message": message}
+    sslmode = _effective_sslmode_from_url(getattr(settings, "DATABASE_URL", None))
+    if sslmode:
+        payload["sslmode"] = sslmode
+    return payload
 
 @app.get("/api/realtime", tags=["auth"], summary="Realtime WebSocket usage")
 def realtime_docs():
