@@ -30,37 +30,65 @@ if [ -z "${DATABASE_URL:-}" ]; then
   exit 1
 fi
 
-# Parse DATABASE_URL to discrete psql env vars using urllib.parse to handle special characters safely.
+# Parse DATABASE_URL to discrete psql env vars using a robust parser that tolerates special chars in password
+# and avoids strict host IPv6 validation in urllib on some Python versions.
 parse_output="$(python3 - <<'PY'
-import os, sys
-from urllib.parse import urlparse
+import os, sys, re
+from urllib.parse import urlsplit, unquote
 
 url = os.getenv("DATABASE_URL", "").strip()
 if not url:
     print("ERROR: DATABASE_URL is empty", file=sys.stderr)
     sys.exit(2)
 
-# Allow both postgres:// and postgresql://
+# Normalize scheme
 if url.startswith("postgres://"):
-    # SQLAlchemy and libpq accept both, urlparse does as well
-    pass
+    url = "postgresql://" + url[len("postgres://"):]
 
-parsed = urlparse(url)
-if parsed.scheme not in ("postgres", "postgresql"):
-    print(f"ERROR: Unsupported scheme in DATABASE_URL: {parsed.scheme}", file=sys.stderr)
+# We first try urlsplit; on some Python builds, urlparse/urlsplit may raise when encountering certain hosts combined
+# with unescaped passwords containing '@', '[', or ']'. To avoid that, pre-escape the password segment manually.
+def escape_password_in_url(u: str) -> str:
+    m = re.match(r"^(postgresql://)([^/@:]+)(?::([^@]*))?@(.+)$", u)
+    if not m:
+        return u
+    scheme, user, pw, rest = m.groups()
+    # Only percent-encode reserved characters in password
+    if pw is None:
+        return u
+    # Replace '%' first to avoid double-encoding, then encode reserved characters
+    pw_enc = pw.replace('%', '%25')
+    # Encode '@', '/', ':', '[', ']' which break netloc parsing
+    pw_enc = (pw_enc.replace('@', '%40')
+                      .replace('/', '%2F')
+                      .replace(':', '%3A')
+                      .replace('[', '%5B')
+                      .replace(']', '%5D'))
+    return f"{scheme}{user}:{pw_enc}@{rest}"
+
+safe_url = escape_password_in_url(url)
+
+try:
+    sp = urlsplit(safe_url)
+except Exception as e:
+    print(f"ERROR: Failed to parse DATABASE_URL: {e}", file=sys.stderr)
     sys.exit(2)
 
-# Extract components and handle defaults
-user = parsed.username or ""
-pw = parsed.password or ""
-host = parsed.hostname or "localhost"
-port = str(parsed.port or 5432)
-db = (parsed.path or "").lstrip("/")
+if sp.scheme not in ("postgres", "postgresql"):
+    print(f"ERROR: Unsupported scheme in DATABASE_URL: {sp.scheme}", file=sys.stderr)
+    sys.exit(2)
+
+# Extract components
+# urlsplit gives us netloc with userinfo; use properties to safely decode
+user = sp.username or ""
+pw = sp.password or ""
+host = sp.hostname or "localhost"
+port = str(sp.port or 5432)
+db = sp.path.lstrip("/") if sp.path else ""
 if not db:
     print("ERROR: DATABASE_URL missing database name", file=sys.stderr)
     sys.exit(2)
 
-# Print as key=value pairs; shell will capture and export them below.
+# Output key=value lines
 print(f"PGUSER={user}")
 print(f"PGPASSWORD={pw}")
 print(f"PGHOST={host}")
