@@ -49,7 +49,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 @app.get("/", tags=["analytics"], summary="Health Check")
 def health_check():
     """Return a simple health check status with database connectivity."""
@@ -59,7 +58,6 @@ def health_check():
     except Exception:
         ok = False
     return {"status": "ok" if ok else "degraded", "env": settings.APP_ENV}
-
 
 @app.get("/api/realtime", tags=["auth"], summary="Realtime WebSocket usage")
 def realtime_docs():
@@ -83,7 +81,6 @@ def realtime_docs():
         "token_endpoint": "/api/auth/realtime-token/{user_id}",
     }
 
-
 # Include routers
 app.include_router(auth_router)
 app.include_router(users_router)
@@ -97,3 +94,5 @@ app.include_router(admin_router)
 app.include_router(cms_router)
 app.include_router(jobseekers_router)
 app.include_router(employers_router)
+
+# ASGI entrypoint note: use `uvicorn src.api.main:app --host 0.0.0.0 --port 8000`

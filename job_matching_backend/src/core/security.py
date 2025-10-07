@@ -7,19 +7,19 @@ from passlib.context import CryptContext
 
 from src.core.config import get_settings
 
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Use pbkdf2_sha256 to avoid native bcrypt wheel/compilation issues in constrained environments.
+pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
 
 # PUBLIC_INTERFACE
 def hash_password(password: str) -> str:
-    """Hash a password using passlib bcrypt."""
+    """Hash a password using passlib (pbkdf2_sha256)."""
     return pwd_context.hash(password)
 
 
 # PUBLIC_INTERFACE
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify a plain password against a hash."""
+    """Verify a plain password against a hash (pbkdf2_sha256)."""
     return pwd_context.verify(plain_password, hashed_password)
 
 
