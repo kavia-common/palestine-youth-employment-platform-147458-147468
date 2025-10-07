@@ -44,9 +44,10 @@ app = FastAPI(
 )
 
 # CORS
+_current_cors_origins = get_cors_origins(settings)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=get_cors_origins(settings),
+    allow_origins=_current_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -59,6 +60,29 @@ def _effective_sslmode_from_url(db_url: str | None) -> str | None:
         sp = urlsplit(db_url)
         params = dict(parse_qsl(sp.query, keep_blank_values=True))
         return params.get("sslmode", "require")
+    except Exception:
+        return None
+
+def _dsn_preview(db_url: str | None) -> str | None:
+    """Return masked DSN preview for diagnostics."""
+    if not db_url:
+        return None
+    try:
+        sp = urlsplit(db_url)
+        user = sp.username or ""
+        host = sp.hostname or ""
+        port = sp.port or 5432
+        dbname = sp.path.lstrip("/") if sp.path else ""
+        return f"{sp.scheme}://{user}@{host}:{port}/{dbname}"
+    except Exception:
+        return "unparseable"
+
+def _db_scheme(db_url: str | None) -> str | None:
+    if not db_url:
+        return None
+    try:
+        sp = urlsplit(db_url)
+        return sp.scheme
     except Exception:
         return None
 
@@ -76,12 +100,17 @@ def health_check():
     except Exception as e:
         message = f"Database not reachable or DATABASE_URL missing: {e}"
         ok = False
-        logger.warning("Health degraded: %s", message)
-    payload = {"status": "ok" if ok else "degraded", "env": settings.APP_ENV, "message": message}
-    # Non-sensitive diagnostic: include effective sslmode if available
-    sslmode = _effective_sslmode_from_url(getattr(settings, "DATABASE_URL", None))
-    if sslmode:
-        payload["sslmode"] = sslmode
+        logger.warning("Health degraded: %s | sslmode=%s", message, _effective_sslmode_from_url(getattr(settings, "DATABASE_URL", None)))
+    db_url = getattr(settings, "DATABASE_URL", None)
+    payload = {
+        "status": "ok" if ok else "degraded",
+        "env": settings.APP_ENV,
+        "message": message,
+        "sslmode": _effective_sslmode_from_url(db_url),
+        "has_database_url": bool(db_url),
+        "dsn_preview": _dsn_preview(db_url),
+        "db_scheme": _db_scheme(db_url),
+    }
     return payload
 
 
@@ -100,11 +129,17 @@ def health_check_endpoint():
     except Exception as e:
         message = f"Database not reachable or DATABASE_URL missing: {e}"
         ok = False
-        logger.warning("Health degraded: %s", message)
-    payload = {"status": "ok" if ok else "degraded", "env": settings.APP_ENV, "message": message}
-    sslmode = _effective_sslmode_from_url(getattr(settings, "DATABASE_URL", None))
-    if sslmode:
-        payload["sslmode"] = sslmode
+        logger.warning("Health degraded: %s | sslmode=%s", message, _effective_sslmode_from_url(getattr(settings, "DATABASE_URL", None)))
+    db_url = getattr(settings, "DATABASE_URL", None)
+    payload = {
+        "status": "ok" if ok else "degraded",
+        "env": settings.APP_ENV,
+        "message": message,
+        "sslmode": _effective_sslmode_from_url(db_url),
+        "has_database_url": bool(db_url),
+        "dsn_preview": _dsn_preview(db_url),
+        "db_scheme": _db_scheme(db_url),
+    }
     return payload
 
 @app.get("/api/realtime", tags=["auth"], summary="Realtime WebSocket usage")
@@ -172,6 +207,11 @@ def debug_db_config():
         "dsn_preview": dsn_preview,
         "sslmode": sslmode,
     }
+
+@app.get("/api/debug/cors", tags=["analytics"], summary="Debug CORS config", description="PUBLIC_INTERFACE\nReturns the currently effective CORS allow_origins list for verification (non-sensitive).")
+def debug_cors():
+    """Return effective CORS origins list to validate frontend <= backend access."""
+    return {"allow_origins": _current_cors_origins}
 
 # Include routers
 app.include_router(auth_router)

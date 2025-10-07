@@ -11,17 +11,19 @@ Prerequisites:
 
 Checks:
 1) Health endpoints
-- GET / -> JSON with {"status": "ok"|"degraded", "env": "...", "message": "..."}
-- GET /health -> Same payload as root, dedicated for probes
+- GET / -> JSON with {"status": "ok"|"degraded", "env": "...", "message": "...", "sslmode": "...", "has_database_url": bool, "dsn_preview": "postgresql://user@host:port/db", "db_scheme": "..."}
+- GET /health -> Same as "/", dedicated for probes
+- Expect sslmode="require" unless explicitly overridden.
 
 2) DB connectivity
 - With .env set, backend attempts SELECT 1 during health checks.
-- If DATABASE_URL is missing or invalid, response shows status "degraded" with guidance.
+- If DATABASE_URL is missing or invalid, response shows status "degraded" with guidance and has_database_url=false.
 - SSL: The backend enforces sslmode=require by default for postgres URLs when not set.
 
 3) CORS
 - Set CORS_ORIGINS to http://localhost:3000 (for frontend dev server).
 - Backend allows credentials, methods, and headers for those origins.
+- Verify via GET /api/debug/cors -> returns {"allow_origins": [...]} and confirm http://localhost:3000 is present (or "*" in dev).
 - If you see browser CORS errors, ensure the exact Origin (scheme+host+port) is present in CORS_ORIGINS or use "*" for unrestricted (dev only).
 
 4) Key routes
