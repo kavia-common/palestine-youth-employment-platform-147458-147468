@@ -84,17 +84,20 @@ def get_cors_origins(settings: Settings) -> List[str]:
     Behavior:
     - If CORS_ORIGINS is "*" allow all.
     - In development (APP_ENV=development), ensure http://localhost:3000 is included for local frontend dev,
-      unless "*" is used or it is already present.
+      even when "*" is used (for visibility in debug), unless already present.
     - Use /api/debug/cors to inspect effective values at runtime.
     """
-    raw = settings.CORS_ORIGINS.strip()
-    if not raw or raw == "*":
-        return ["*"]
-    origins = [o.strip() for o in raw.split(",") if o.strip()]
-    if settings.APP_ENV.lower() == "development":
-        if "http://localhost:3000" not in origins:
-            # Ensure local frontend can reach backend during dev
+    raw = (settings.CORS_ORIGINS or "").strip()
+    # Start with parsed list if not wildcard
+    if raw and raw != "*":
+        origins = [o.strip() for o in raw.split(",") if o.strip()]
+    else:
+        # Represent wildcard explicitly and include localhost in dev for verification visibility
+        origins = ["*"]
+        if settings.APP_ENV.lower() == "development" and "http://localhost:3000" not in origins:
             origins.append("http://localhost:3000")
+    if settings.APP_ENV.lower() == "development" and "http://localhost:3000" not in origins:
+        origins.append("http://localhost:3000")
     return origins
 
 

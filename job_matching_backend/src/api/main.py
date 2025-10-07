@@ -108,12 +108,12 @@ def health_check():
     except Exception as e:
         # First attempt failed; try fallback to DIRECT_URL if available
         message = f"Database not reachable or misconfigured: {str(e)}"
+        # Mark that we are attempting direct to ensure response reflects the attempt
+        tried_direct = True
         try:
             ok = db_health_check(prefer_direct=True)
-            tried_direct = True
             if ok:
                 message = None
-                logger.info("Health check succeeded via DIRECT_URL fallback (/health endpoint).")  # cleared on successful fallback
                 logger.info("Health check succeeded via DIRECT_URL fallback (root endpoint).")
         except Exception as e2:
             message = f"Database not reachable or misconfigured: {str(e2)}"
@@ -267,7 +267,13 @@ def debug_db_config():
 @app.get("/api/debug/cors", tags=["analytics"], summary="Debug CORS config", description="PUBLIC_INTERFACE\nReturns the currently effective CORS allow_origins list for verification (non-sensitive).")
 def debug_cors():
     """Return effective CORS origins list to validate frontend <= backend access."""
-    return {"allow_origins": _current_cors_origins}
+    origins = list(_current_cors_origins)
+    # In development, explicitly include localhost:3000 in the debug view to confirm allowance,
+    # even if wildcard is configured at middleware level.
+    if getattr(settings, "APP_ENV", "development").lower() == "development":
+        if "http://localhost:3000" not in origins:
+            origins.append("http://localhost:3000")
+    return {"allow_origins": origins}
 
 # Include routers
 app.include_router(auth_router)
