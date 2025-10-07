@@ -111,25 +111,38 @@ def _ensure_engine(prefer_direct: bool = False) -> Engine:
       when the scheme is 'postgres' or 'postgresql'.
     - Enforces 'sslmode=require' by default for Supabase/hosted Postgres unless explicitly set
       in the connection URL.
-    - Tries DATABASE_URL first by default, then DIRECT_URL (if provided). If prefer_direct=True,
-      try DIRECT_URL before DATABASE_URL.
+    - Attempts both DATABASE_URL and DIRECT_URL automatically. If prefer_direct=True, DIRECT_URL
+      is tried first; otherwise DATABASE_URL is tried first. Regardless of the first attempt,
+      the other candidate is also attempted before failing. This improves resilience when pgbouncer
+      endpoints reject certain operations while direct connections succeed.
     """
     global _engine, _SessionLocal, _engine_source, _engine_normalized_url
     if _engine is None:
         settings = get_settings()
-        # Build candidate list based on preference
-        primary = settings.DIRECT_URL if prefer_direct else settings.DATABASE_URL
-        secondary = settings.DATABASE_URL if prefer_direct else settings.DIRECT_URL
 
+        # Collect raw candidates
+        raw_db = settings.DATABASE_URL
+        raw_direct = settings.DIRECT_URL
+
+        # Construct ordered attempts based on preference
+        ordered: list[tuple[str, Optional[str]]] = []
+        if prefer_direct:
+            ordered = [("DIRECT_URL", raw_direct), ("DATABASE_URL", raw_db)]
+        else:
+            ordered = [("DATABASE_URL", raw_db), ("DIRECT_URL", raw_direct)]
+
+        # Build normalized candidate list, skipping Nones, and ensure uniqueness by source name
         candidates: list[Tuple[str, str]] = []
-        if primary:
-            candidates.append((("DIRECT_URL" if prefer_direct else "DATABASE_URL"), _normalize_db_url(primary)))
-        if secondary:
-            candidates.append((("DATABASE_URL" if prefer_direct else "DIRECT_URL"), _normalize_db_url(secondary)))
+        seen_sources: set[str] = set()
+        for src, url in ordered:
+            if src in seen_sources:
+                continue
+            if url:
+                candidates.append((src, _normalize_db_url(url)))
+                seen_sources.add(src)
 
-        # If neither present, require DATABASE_URL (raises with helpful error)
+        # If still no candidates, require DATABASE_URL (raises helpful error)
         if not candidates:
-            # require_database_url will raise an instructive message
             primary_url = settings.require_database_url()
             candidates.append(("DATABASE_URL", _normalize_db_url(primary_url)))
 
@@ -139,7 +152,8 @@ def _ensure_engine(prefer_direct: bool = False) -> Engine:
             if eng is not None:
                 _engine = eng
                 _engine_source = source_name
-                _engine_normalized_url_full = candidate
+                # Store full and masked URLs for diagnostics
+                globals()["_engine_normalized_url_full"] = candidate
                 _engine_normalized_url = _mask_dsn_preview(candidate)
                 _SessionLocal = sessionmaker(bind=_engine, autoflush=False, autocommit=False, future=True)
                 break

@@ -192,6 +192,7 @@ def health_check_endpoint():
         "message": message,
         "sslmode": _effective_sslmode_from_url(db_url),
         "has_database_url": bool(db_url),
+        "has_direct_url": bool(getattr(settings, "DIRECT_URL", None)),
         "dsn_preview": _dsn_preview(db_url),
         "db_scheme": _db_scheme(db_url),
         "tried_direct": tried_direct,
