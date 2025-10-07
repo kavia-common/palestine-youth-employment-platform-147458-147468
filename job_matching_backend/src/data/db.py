@@ -159,15 +159,14 @@ def _ensure_engine(prefer_direct: bool = False) -> Engine:
         raw_direct = settings.DIRECT_URL
 
         # Construct ordered attempts based on preference
-        ordered: list[tuple[str, Optional[str]]] = []
         if prefer_direct:
-            ordered = [("DIRECT_URL", raw_direct), ("DATABASE_URL", raw_db)]
+            ordered_pairs: list[tuple[str, Optional[str]]] = [("DIRECT_URL", raw_direct), ("DATABASE_URL", raw_db)]
         else:
-            ordered = [("DATABASE_URL", raw_db), ("DIRECT_URL", raw_direct)]
+            ordered_pairs = [("DATABASE_URL", raw_db), ("DIRECT_URL", raw_direct)]
 
-        # Build normalized candidate list, skipping Nones
+        # Build normalized candidate list, skipping missing values
         candidates: list[Tuple[str, str]] = []
-        for src, url in ordered:
+        for src, url in ordered_pairs:
             if url:
                 candidates.append((src, _normalize_db_url(url)))
 
@@ -177,6 +176,8 @@ def _ensure_engine(prefer_direct: bool = False) -> Engine:
             candidates.append(("DATABASE_URL", _normalize_db_url(primary_url)))
 
         last_error: Exception | None = None
+
+        # Try candidates in order
         for source_name, candidate in candidates:
             eng, err = _try_connect(candidate)
             if eng is not None:
@@ -186,14 +187,14 @@ def _ensure_engine(prefer_direct: bool = False) -> Engine:
                 globals()["_engine_normalized_url_full"] = candidate
                 _engine_normalized_url = _mask_dsn_preview(candidate)
                 _SessionLocal = sessionmaker(bind=_engine, autoflush=False, autocommit=False, future=True)
+                last_error = None
                 break
             else:
                 last_error = err
 
-        # If first pass failed completely, and we had both candidates, swap order and retry once
-        if _engine is None and len(candidates) == 2:
-            swapped = [(candidates[1][0], candidates[1][1]), (candidates[0][0], candidates[0][1])]
-            for source_name, candidate in swapped:
+        # If first pass failed and we have another option, swap order and retry once
+        if _engine is None and len(candidates) > 1:
+            for source_name, candidate in reversed(candidates):
                 eng, err = _try_connect(candidate)
                 if eng is not None:
                     _engine = eng
@@ -292,11 +293,8 @@ def health_check(prefer_direct: bool = False) -> bool:
         _SessionLocal = None
         _engine_source = None
         _engine_normalized_url = None
-        # Clear and immediately read the full URL cache to mark usage for static analysis
+        # Clear full URL cache
         _engine_normalized_url_full = None
-        if _engine_normalized_url_full is not None:
-            # no-op branch; keeps reference flow explicit
-            pass
         eng = _ensure_engine(prefer_direct=True)
     else:
         eng = get_engine()

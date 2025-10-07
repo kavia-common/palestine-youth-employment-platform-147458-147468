@@ -108,10 +108,9 @@ def health_check():
     except Exception as e:
         # First attempt failed; try fallback to DIRECT_URL if available
         message = f"Database not reachable or misconfigured: {str(e)}"
-        # Mark that we are attempting direct to ensure response reflects the attempt
-        tried_direct = True
         try:
             ok = db_health_check(prefer_direct=True)
+            tried_direct = True
             if ok:
                 message = None
                 logger.info("Health check succeeded via DIRECT_URL fallback (root endpoint).")
@@ -120,23 +119,26 @@ def health_check():
             ok = False
 
         if not ok:
+            # Use connection info helper for robust sslmode/scheme reporting without leaking secrets
+            eff = get_effective_connection_info()
             logger.warning(
-                "Health degraded: %s | sslmode=%s",
+                "Health degraded: %s | sslmode=%s | scheme=%s",
                 message,
-                _effective_sslmode_from_url(getattr(settings, "DATABASE_URL", None)),
+                eff.get("sslmode") or _effective_sslmode_from_url(getattr(settings, "DATABASE_URL", None)),
+                eff.get("scheme"),
             )
 
-    db_url = getattr(settings, "DATABASE_URL", None)
+    # Prefer reporting based on effective connection info (masked)
     conn_info = get_effective_connection_info()
     payload = {
         "status": "ok" if ok else "degraded",
         "env": settings.APP_ENV,
         "message": message,
-        "sslmode": _effective_sslmode_from_url(db_url),
-        "has_database_url": bool(db_url),
+        "sslmode": conn_info.get("sslmode") or _effective_sslmode_from_url(getattr(settings, "DATABASE_URL", None)),
+        "has_database_url": bool(getattr(settings, "DATABASE_URL", None)),
         "has_direct_url": bool(getattr(settings, "DIRECT_URL", None)),
-        "dsn_preview": _dsn_preview(db_url),
-        "db_scheme": _db_scheme(db_url),
+        "dsn_preview": conn_info.get("dsn_preview") or _dsn_preview(getattr(settings, "DATABASE_URL", None)),
+        "db_scheme": conn_info.get("scheme") or _db_scheme(getattr(settings, "DATABASE_URL", None)),
         "tried_direct": tried_direct,
         "db_connection": conn_info,
         "allow_origins": _current_cors_origins,
@@ -170,22 +172,24 @@ def health_check_endpoint():
             message = f"Database not reachable or misconfigured: {str(e2)}"
             ok = False
         if not ok:
+            eff = get_effective_connection_info()
             logger.warning(
-                "Health degraded: %s | sslmode=%s",
+                "Health degraded: %s | sslmode=%s | scheme=%s",
                 message,
-                _effective_sslmode_from_url(getattr(settings, "DATABASE_URL", None)),
+                eff.get("sslmode") or _effective_sslmode_from_url(getattr(settings, "DATABASE_URL", None)),
+                eff.get("scheme"),
             )
-    db_url = getattr(settings, "DATABASE_URL", None)
+
     conn_info = get_effective_connection_info()
     payload = {
         "status": "ok" if ok else "degraded",
         "env": settings.APP_ENV,
         "message": message,
-        "sslmode": _effective_sslmode_from_url(db_url),
-        "has_database_url": bool(db_url),
+        "sslmode": conn_info.get("sslmode") or _effective_sslmode_from_url(getattr(settings, "DATABASE_URL", None)),
+        "has_database_url": bool(getattr(settings, "DATABASE_URL", None)),
         "has_direct_url": bool(getattr(settings, "DIRECT_URL", None)),
-        "dsn_preview": _dsn_preview(db_url),
-        "db_scheme": _db_scheme(db_url),
+        "dsn_preview": conn_info.get("dsn_preview") or _dsn_preview(getattr(settings, "DATABASE_URL", None)),
+        "db_scheme": conn_info.get("scheme") or _db_scheme(getattr(settings, "DATABASE_URL", None)),
         "tried_direct": tried_direct,
         "db_connection": conn_info,
         "allow_origins": _current_cors_origins,
