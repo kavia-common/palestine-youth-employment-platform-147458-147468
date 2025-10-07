@@ -1,17 +1,19 @@
 from contextlib import contextmanager
-from typing import Generator
+from typing import Generator, Optional, Tuple, Dict
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
-from sqlalchemy.exc import OperationalError
+
 
 from src.core.config import get_settings
 
 
 _engine: Engine | None = None
 _SessionLocal = None
+_engine_source: Optional[str] = None  # "DATABASE_URL" or "DIRECT_URL"
+_engine_normalized_url: Optional[str] = None  # masked/normalized for diagnostics
 
 
 def _normalize_db_url(db_url: str) -> str:
@@ -52,6 +54,24 @@ def _normalize_db_url(db_url: str) -> str:
         return normalized
 
 
+def _mask_dsn_preview(url: str) -> str:
+    """
+    Produce a masked DSN preview string safe for logs and diagnostics.
+    Example: postgresql+psycopg://user@host:port/db
+    """
+    try:
+        sp = urlsplit(url)
+        user = sp.username or ""
+        host = sp.hostname or ""
+        port = sp.port or 5432
+        dbname = sp.path.lstrip("/") if sp.path else ""
+        scheme = sp.scheme
+        return f"{scheme}://{user}@{host}:{port}/{dbname}"
+    except Exception:
+        # Fallback, avoid exposing secrets
+        return "unparseable"
+
+
 def _build_engine(normalized_url: str) -> Engine:
     """Create a SQLAlchemy engine with consistent options."""
     return create_engine(
@@ -63,7 +83,17 @@ def _build_engine(normalized_url: str) -> Engine:
     )
 
 
-def _ensure_engine() -> Engine:
+def _try_connect(candidate_url: str) -> Tuple[Engine, None] | Tuple[None, Exception]:
+    try:
+        eng = _build_engine(candidate_url)
+        with eng.connect() as conn:
+            conn.execute(text("select 1"))
+        return eng, None  # type: ignore
+    except Exception as exc:
+        return None, exc
+
+
+def _ensure_engine(prefer_direct: bool = False) -> Engine:
     """
     Create and cache a global SQLAlchemy engine.
 
@@ -71,39 +101,42 @@ def _ensure_engine() -> Engine:
     - Forces SQLAlchemy to use the psycopg v3 driver by rewriting to 'postgresql+psycopg://'
       when the scheme is 'postgres' or 'postgresql'.
     - Enforces 'sslmode=require' by default for Supabase/hosted Postgres unless explicitly set
-      in the DATABASE_URL query parameters.
-    - Behavior ensures compatibility with Supabase which requires SSL.
+      in the connection URL.
+    - Tries DATABASE_URL first by default, then DIRECT_URL (if provided). If prefer_direct=True,
+      try DIRECT_URL before DATABASE_URL.
     """
-    global _engine, _SessionLocal
+    global _engine, _SessionLocal, _engine_source, _engine_normalized_url
     if _engine is None:
         settings = get_settings()
-        # Primary URL or raise if not provided
-        primary_url = settings.require_database_url()
-        # Normalize URL robustly
-        primary_norm = _normalize_db_url(primary_url)
+        # Build candidate list based on preference
+        primary = settings.DIRECT_URL if prefer_direct else settings.DATABASE_URL
+        secondary = settings.DATABASE_URL if prefer_direct else settings.DIRECT_URL
 
-        # Attempt primary engine first; if it fails, try DIRECT_URL (if present)
+        candidates: list[Tuple[str, str]] = []
+        if primary:
+            candidates.append((("DIRECT_URL" if prefer_direct else "DATABASE_URL"), _normalize_db_url(primary)))
+        if secondary:
+            candidates.append((("DATABASE_URL" if prefer_direct else "DIRECT_URL"), _normalize_db_url(secondary)))
+
+        # If neither present, require DATABASE_URL (raises with helpful error)
+        if not candidates:
+            # require_database_url will raise an instructive message
+            primary_url = settings.require_database_url()
+            candidates.append(("DATABASE_URL", _normalize_db_url(primary_url)))
+
         last_error: Exception | None = None
-        for candidate in (primary_norm, _normalize_db_url(settings.DIRECT_URL) if settings.DIRECT_URL else None):
-            if not candidate:
-                continue
-            try:
-                eng = _build_engine(candidate)
-                # Test connection quickly
-                with eng.connect() as conn:
-                    conn.execute(text("select 1"))
+        for source_name, candidate in candidates:
+            eng, err = _try_connect(candidate)
+            if eng is not None:
                 _engine = eng
+                _engine_source = source_name
+                _engine_normalized_url = _mask_dsn_preview(candidate)
                 _SessionLocal = sessionmaker(bind=_engine, autoflush=False, autocommit=False, future=True)
                 break
-            except OperationalError as oe:
-                last_error = oe
-                continue
-            except Exception as e:
-                last_error = e
-                continue
+            else:
+                last_error = err
 
         if _engine is None:
-            # Surface the last error for clarity
             if last_error:
                 raise last_error
             raise RuntimeError("Failed to initialize database engine: no valid DATABASE_URL/DIRECT_URL candidates")
@@ -114,6 +147,41 @@ def _ensure_engine() -> Engine:
 def get_engine() -> Engine:
     """Return the global SQLAlchemy engine connected to Supabase Postgres."""
     return _ensure_engine()
+
+
+# PUBLIC_INTERFACE
+def get_effective_connection_info() -> Dict[str, Optional[str]]:
+    """
+    Return safe diagnostics about the effective DB connection in use.
+    - source: which env var provided the winning URL ("DATABASE_URL" or "DIRECT_URL")
+    - dsn_preview: masked normalized DSN preview
+    - sslmode: effective sslmode (require if unspecified)
+    - scheme: normalized SQLAlchemy scheme (e.g., postgresql+psycopg)
+    """
+    # Ensure engine attempted initialization (without forcing)
+    try:
+        _ensure_engine()
+    except Exception:
+        # ignore, diagnostics may still be useful
+        pass
+
+    info: Dict[str, Optional[str]] = {
+        "source": _engine_source,
+        "dsn_preview": _engine_normalized_url,
+        "sslmode": None,
+        "scheme": None,
+    }
+    # Derive sslmode and scheme from normalized URL we stored, if available
+    if _engine_normalized_url:
+        try:
+            sp = urlsplit(_engine_normalized_url)
+            info["scheme"] = sp.scheme
+            params = dict(parse_qsl(sp.query, keep_blank_values=True))
+            info["sslmode"] = params.get("sslmode", "require")
+        except Exception:
+            info["scheme"] = None
+            info["sslmode"] = "require"
+    return info
 
 
 # PUBLIC_INTERFACE
@@ -133,9 +201,23 @@ def session_scope() -> Generator:
 
 
 # PUBLIC_INTERFACE
-def health_check() -> bool:
-    """Perform a light 'select 1' to validate DB connectivity."""
-    eng = get_engine()
+def health_check(prefer_direct: bool = False) -> bool:
+    """Perform a light 'select 1' to validate DB connectivity.
+
+    If prefer_direct=True, attempt to initialize/refresh engine using DIRECT_URL first.
+    """
+    # If prefer_direct, we may need to (re)initialize engine
+    if prefer_direct:
+        # Reset engine cache so we can retry with different preference
+        global _engine, _SessionLocal, _engine_source, _engine_normalized_url
+        _engine = None
+        _SessionLocal = None
+        _engine_source = None
+        _engine_normalized_url = None
+        eng = _ensure_engine(prefer_direct=True)
+    else:
+        eng = get_engine()
+
     with eng.connect() as conn:
         res = conn.execute(text("select 1"))
         _ = res.scalar()
