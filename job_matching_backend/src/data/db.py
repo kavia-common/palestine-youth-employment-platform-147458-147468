@@ -60,6 +60,7 @@ def _mask_dsn_preview(url: str) -> str:
     """
     Produce a masked DSN preview string safe for logs and diagnostics.
     Example: postgresql+psycopg://user@host:port/db
+    Never includes password even if it contains reserved characters.
     """
     try:
         sp = urlsplit(url)

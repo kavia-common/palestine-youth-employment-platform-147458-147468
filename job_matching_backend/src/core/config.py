@@ -93,6 +93,7 @@ def get_cors_origins(settings: Settings) -> List[str]:
     origins = [o.strip() for o in raw.split(",") if o.strip()]
     if settings.APP_ENV.lower() == "development":
         if "http://localhost:3000" not in origins:
+            # Ensure local frontend can reach backend during dev
             origins.append("http://localhost:3000")
     return origins
 

@@ -1,7 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logging
-import re
 
 from src.api.routers.auth import router as auth_router
 from src.api.routers.users import router as users_router
@@ -66,33 +65,19 @@ def _effective_sslmode_from_url(db_url: str | None) -> str | None:
         return "require"
 
 def _dsn_preview(db_url: str | None) -> str | None:
-    """Return masked DSN preview for diagnostics."""
+    """Return masked DSN preview for diagnostics.
+    Uses urllib.parse for robustness; never exposes password even if it contains reserved characters.
+    """
     if not db_url:
         return None
-    # Tolerant masking: handle passwords with reserved chars and optional +driver
-    m = re.match(
-        r"^(?P<scheme>postgresql|postgres)(?P<driver>\+[^:]*)?://(?P<userinfo>[^@]*)@(?P<hostport>[^/]+)/(?P<db>[^?]+)",
-        db_url,
-    )
-    if m:
-        scheme = m.group("scheme")
-        userinfo = m.group("userinfo") or ""
-        user = userinfo.split(":", 1)[0]
-        hostport = m.group("hostport") or ""
-        if ":" in hostport:
-            host, port = hostport.split(":", 1)
-        else:
-            host, port = hostport, "5432"
-        db = m.group("db")
-        return f"{scheme}://{user}@{host}:{port}/{db}"
-    # Fallback to urlsplit
     try:
         sp = urlsplit(db_url)
+        # Normalize scheme for display
+        scheme = "postgresql" if sp.scheme.startswith("postgres") else sp.scheme
         user = sp.username or ""
         host = sp.hostname or ""
         port = sp.port or 5432
         dbname = sp.path.lstrip("/") if sp.path else ""
-        scheme = "postgresql" if sp.scheme.startswith("postgres") else sp.scheme
         return f"{scheme}://{user}@{host}:{port}/{dbname}"
     except Exception:
         return "unparseable"
@@ -110,8 +95,10 @@ def _db_scheme(db_url: str | None) -> str | None:
 def health_check():
     """Return a simple health check status with database connectivity.
 
-    If DATABASE_URL is not configured, the service reports 'degraded' with a message
-    to help configure environment variables properly.
+    Behavior:
+    - First attempts SELECT 1 using DATABASE_URL with sslmode=require.
+    - On failure, automatically retries using DIRECT_URL if provided.
+    - Returns status=ok when SELECT 1 succeeds, otherwise status=degraded and a message.
     """
     ok = False
     message = None
@@ -160,8 +147,10 @@ def health_check_endpoint():
     """PUBLIC_INTERFACE
     Health endpoint for uptime probes.
 
-    Returns:
-        JSON containing status ("ok" or "degraded"), environment (settings.APP_ENV), and an optional message.
+    Behavior:
+    - Attempts SELECT 1 via DATABASE_URL (sslmode=require), then falls back to DIRECT_URL if needed.
+    - Returns:
+        JSON containing status ("ok" or "degraded"), environment (settings.APP_ENV), tried_direct, and optional message.
     """
     ok = False
     message = None
