@@ -1,0 +1,4 @@
+{
+    "command": "pytest",
+    "working_directory": "/home/kavia/workspace/code-generation/palestine-youth-employment-platform-147458-147468/job_matching_backend"
+}
